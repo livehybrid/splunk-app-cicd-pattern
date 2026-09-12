@@ -1,0 +1,9 @@
+output/
+stage/
+dist/
+*.tar.gz
+__pycache__/
+*.py[cod]
+.venv/
+appinspect_result*.json
+appinspect_report*.xml

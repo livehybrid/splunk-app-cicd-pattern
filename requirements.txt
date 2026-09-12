@@ -1,0 +1,2 @@
+splunk-add-on-ucc-framework
+splunk-appinspect

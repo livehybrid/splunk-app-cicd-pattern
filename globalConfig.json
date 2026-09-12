@@ -1,0 +1,23 @@
+{
+    "meta": {
+        "name": "TA-cicd-pattern",
+        "restRoot": "TA-cicd-pattern",
+        "version": "1.0.0",
+        "displayName": "Splunk App CI/CD Pattern",
+        "schemaVersion": "0.0.10",
+        "supportedPythonVersion": [
+            "3.9"
+        ]
+    },
+    "pages": {
+        "configuration": {
+            "title": "Configuration",
+            "description": "Nothing to configure. This add-on exists to demonstrate the pipeline.",
+            "tabs": [
+                {
+                    "type": "loggingTab"
+                }
+            ]
+        }
+    }
+}

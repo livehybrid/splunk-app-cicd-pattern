@@ -1,0 +1,110 @@
+# Build, test, ship. Four jobs, no bespoke scripts, nothing to configure.
+#
+#   push / PR   -> package (ucc-gen) -> AppInspect (cloud, future, private_victoria)
+#   tag v*.*.*  -> ^ all of that, then publish a GitHub release
+#
+# The AppInspect and publish legs are reusable workflows kept in
+# livehybrid/deploy-splunk-app-action, so every add-on you own gets the same
+# gates from one place.
+name: Splunk App CI/CD
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*.*.*"
+  pull_request:
+
+permissions:
+  pull-requests: write
+  actions: write
+  checks: write
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          # Pin it. A platform Python bump should be a decision, not a surprise.
+          python-version: "3.11"
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          SHORT_COMMIT_HASH=$(git rev-parse --short HEAD)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            TAG_VERSION="1.0.0"
+          fi
+          echo "TAG_VERSION=${TAG_VERSION}" >> $GITHUB_OUTPUT
+          # The commit hash rides along in the version, so you can always tell
+          # which commit is running on a stack.
+          echo "VERSION_WITH_HASH=${TAG_VERSION}+${SHORT_COMMIT_HASH}" >> $GITHUB_OUTPUT
+
+      - name: Install UCC framework
+        run: pip install --upgrade splunk-add-on-ucc-framework
+
+      - name: Build add-on (ucc-gen)
+        shell: bash
+        run: |
+          ucc-gen build --source package --ta-version "${{ steps.version.outputs.TAG_VERSION }}"
+          # AppInspect rejects 775/664. Normalise to 755 dirs, 644 files.
+          mkdir -p stage
+          cp -r output/TA-cicd-pattern stage/TA-cicd-pattern
+          find stage/TA-cicd-pattern -type d -exec chmod 755 {} +
+          find stage/TA-cicd-pattern -type f -exec chmod 644 {} +
+
+      - name: Generate package tarball
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -czf "dist/TA-cicd-pattern-${{ steps.version.outputs.VERSION_WITH_HASH }}.tar.gz" \
+            -C stage TA-cicd-pattern/
+          ls -la dist/
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # AppInspect CLI. Runs on every push and PR, no credentials needed.
+  appinspect:
+    name: quality-appinspect
+    needs: package
+    uses: livehybrid/deploy-splunk-app-action/.github/workflows/appinspect-cli.yml@main
+    with:
+      # `cloud` answers "will it run on Splunk Cloud?".
+      # `future` answers "what is about to break?". That is the tag people miss.
+      tags: "cloud,future,private_victoria"
+    secrets:
+      token: "${{ secrets.GITHUB_TOKEN }}"
+
+  # AppInspect API (the same vetting Splunkbase runs). Needs Splunkbase
+  # credentials, so it is opt-in: set the repo variable APPINSPECT_API to "true"
+  # and add SPLUNKBASE_USERNAME / SPLUNKBASE_PASSWORD secrets. Left unset, this
+  # job skips green and the rest of the pipeline still works.
+  quality-appinspect-api:
+    name: quality-appinspect-api
+    if: vars.APPINSPECT_API == 'true'
+    needs: appinspect
+    uses: livehybrid/deploy-splunk-app-action/.github/workflows/appinspect-api.yml@main
+    secrets:
+      splunkbase_username: ${{ secrets.SPLUNKBASE_USERNAME }}
+      splunkbase_password: ${{ secrets.SPLUNKBASE_PASSWORD }}
+
+  # Release. Only on a v*.*.* tag, so day-to-day commits cannot publish.
+  publish-gh:
+    permissions:
+      contents: write
+    needs: appinspect
+    uses: livehybrid/deploy-splunk-app-action/.github/workflows/publish.yml@main

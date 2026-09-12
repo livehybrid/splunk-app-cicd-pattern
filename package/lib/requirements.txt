@@ -1,0 +1,5 @@
+# splunktaucclib backs the add-on's configuration page. ucc-gen requires it for
+# any add-on with a UI, and vendors it into lib/ at build time. It is also the
+# reason AppInspect has something real to say: most `future` findings come from
+# vendored libraries, not from your code.
+splunktaucclib>=8.2.0
