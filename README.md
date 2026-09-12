@@ -30,6 +30,10 @@ happens the same way, every time, without you.
 | **Package** | tarball stamped `<version>+<short commit hash>` | every push and PR |
 | **Ship** | GitHub release with the tarball attached | only on a `v*.*.*` tag |
 
+Publishing to Splunkbase is deliberately not wired up here. The pipeline's job
+is to hand you a vetted, versioned tarball; uploading it stays a human step, which
+keeps a person in the loop on what reaches customers.
+
 One file drives all of it: [`.github/workflows/splunk-app-ci.yml`](.github/workflows/splunk-app-ci.yml).
 The test and ship stages are reusable workflows kept in
 [`livehybrid/deploy-splunk-app-action`](https://github.com/livehybrid/deploy-splunk-app-action),
@@ -79,6 +83,9 @@ Four things that cost everyone a red build once:
   bump should be a decision, not a surprise.
 - **Gate publishing on a tag.** The release job is conditioned on
   `refs/tags/v*`, so a stray commit to a branch cannot ship an add-on.
+- **`ucc-gen build` rewrites `globalConfig.json` in place**, stamping in the
+  version you passed. Harmless in CI on a throwaway checkout, but a local
+  build will leave your working copy dirty. Do not commit that.
 
 ## What this repo is not
 

@@ -56,7 +56,7 @@ jobs:
       - name: Build add-on (ucc-gen)
         shell: bash
         run: |
-          ucc-gen build --source package --ta-version "${{ steps.version.outputs.TAG_VERSION }}"
+          ucc-gen build --source package --ta-version "${{ steps.version.outputs.VERSION_WITH_HASH }}"
           # AppInspect rejects 775/664. Normalise to 755 dirs, 644 files.
           mkdir -p stage
           cp -r output/TA-cicd-pattern stage/TA-cicd-pattern
