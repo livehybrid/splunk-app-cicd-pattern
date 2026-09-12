@@ -1,5 +1,7 @@
 # Splunk App CI/CD Pattern
 
+[![Splunk App CI/CD](https://github.com/livehybrid/splunk-app-cicd-pattern/actions/workflows/splunk-app-ci.yml/badge.svg)](https://github.com/livehybrid/splunk-app-cicd-pattern/actions/workflows/splunk-app-ci.yml)
+
 A minimal Splunk add-on wired to a working build, test and ship pipeline.
 
 The add-on is deliberately trivial: one custom search command that returns a
@@ -35,7 +37,7 @@ so every add-on you own gets the same gates from one place.
 
 ## Use it for your own add-on
 
-1. Clone or use this repo as a template.
+1. Click **Use this template**, or clone it.
 2. Replace `package/` and `globalConfig.json` with your add-on.
 3. Search and replace `TA-cicd-pattern` with your add-on's name (it appears in
    the workflow's build and tarball steps).

@@ -1,0 +1,9 @@
+# Keeps the pipeline's own actions current. A pinned action is a good thing; a
+# pinned action nobody ever bumps is how you end up on a deprecated runner.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
