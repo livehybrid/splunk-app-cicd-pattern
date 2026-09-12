@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           # Pin it. A platform Python bump should be a decision, not a surprise.
           python-version: "3.11"
