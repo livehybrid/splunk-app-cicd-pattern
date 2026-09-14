@@ -96,13 +96,17 @@ jobs:
       # Creating the stack is its own step so that `outputs.stack_id` exists for
       # teardown even when a later step fails. A stack that leaks sits there
       # until its termination date burning quota.
+      #
+      # Provisioning is SLOW: a measured run took 75 minutes from createStack to
+      # RUNNING. Hence the 90 minute ceiling, and hence this being a
+      # workflow_dispatch leg rather than something on every push.
       - name: Request a stack
         id: stack
         shell: bash
         run: |
           python3 .github/scripts/scts.py create \
             ${{ inputs.splunk_version && format('--splunk-version {0}', inputs.splunk_version) || '' }} \
-            --timeout 1800 --interval 20
+            --timeout 5400 --interval 30
 
       - name: Install the add-on onto the stack
         id: install

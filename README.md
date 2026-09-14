@@ -90,6 +90,21 @@ quota, and never on `pull_request_target`, which would hand a fork your token.
 
 Teardown runs under `if: always()`, so a failed install still deletes the stack.
 
+Two things worth knowing before you wire this into anything time-sensitive.
+
+**Provisioning is slow.** A measured run took **75 minutes** from `createStack`
+to `RUNNING`, on a stack that then worked perfectly. That is why this leg is
+`workflow_dispatch` rather than something on every push, and why the wait
+ceiling is 90 minutes.
+
+**SCTS hands you a real Splunk Cloud stack** (`*.splunkcloud.com`), and the
+install route is the Splunk Web app installer, not management REST.
+`POST /services/apps/local` answers HTTP 500 `'name'` to a multipart body: it
+never parses the upload, and its `name` argument wants a path on the server,
+which a remote caller cannot produce. Management REST on :8089 *is* reachable
+with the supplied admin credentials, which is what the version read-back uses
+to verify.
+
 The client is [`.github/scripts/scts.py`](.github/scripts/scts.py), stdlib only,
 and it works from your laptop too:
 
@@ -98,8 +113,12 @@ export SCTS_API_TOKEN=...
 python3 .github/scripts/scts.py versions
 python3 .github/scripts/scts.py create
 python3 .github/scripts/scts.py install <stack-id> --package dist/TA-cicd-pattern-1.0.0+abc1234.tar.gz --app-name TA-cicd-pattern
+python3 .github/scripts/scts.py probe <stack-id>
 python3 .github/scripts/scts.py delete <stack-id>
 ```
+
+`probe` reports which endpoints a given stack answers on, which is the quickest
+way to tell a broken stack from a broken assumption.
 
 ### Run the same checks locally
 

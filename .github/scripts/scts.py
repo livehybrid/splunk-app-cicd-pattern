@@ -30,10 +30,10 @@ a pip step or a lockfile to stay reproducible.
 from __future__ import annotations
 
 import argparse
+import http.cookiejar
 import json
 import mimetypes
 import os
-import re
 import ssl
 import sys
 import time
@@ -287,111 +287,116 @@ class Stack:
         self.username = str(access["username"])
         self.password = str(access["password"])
         self._ctx = _tls_context(verify_tls)
+        # A real cookie jar, not hand-rolled Set-Cookie parsing. A stack sits
+        # behind an AWS load balancer whose AWSALB cookies carry `Expires=Sun,
+        # 21 Sep ...`, and splitting that header on commas corrupts the jar. The
+        # symptom is a flat HTTP 400 from the login POST.
+        self._jar = http.cookiejar.CookieJar()
+        self._opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self._jar),
+            urllib.request.HTTPSHandler(context=self._ctx),
+        )
+        self._opener.addheaders = [("User-Agent", "splunk-app-cicd-pattern/scts.py")]
         # Everything derived from the stack password must be masked before any
         # of it can reach a log line.
         mask(self.password)
 
     @property
     def mgmt_url(self) -> str:
-        """Management REST, assuming the conventional :8089 on the same host."""
+        """Management REST, on the conventional :8089 of the same host."""
         parts = urllib.parse.urlsplit(self.web_url)
         return "https://{}:8089".format(parts.hostname)
+
+    def _cookie(self, name_prefix: str) -> str:
+        return next(
+            (c.value for c in self._jar if c.name.startswith(name_prefix)), "",
+        )
 
     # -- probing ------------------------------------------------------------
 
     def probe(self) -> Dict[str, Any]:
-        """Report which install routes this stack actually answers on."""
+        """Report which endpoints this stack actually answers on.
+
+        Useful on a first run against an unfamiliar stack shape, and cheap
+        enough to leave in the pipeline as a diagnostic.
+        """
         result: Dict[str, Any] = {"web_url": self.web_url, "mgmt_url": self.mgmt_url}
-
-        try:
-            status, _, _ = _request(
-                "GET", self.web_url + "/en-US/account/login",
-                {"User-Agent": "scts.py"}, timeout=30, context=self._ctx,
-            )
-            result["web_login"] = status
-        except Exception as exc:  # noqa: BLE001 - a probe reports, never raises
-            result["web_login"] = "unreachable: {}".format(exc)
-
-        try:
-            status, _, _ = _request(
-                "GET", self.mgmt_url + "/services/server/info",
-                {"User-Agent": "scts.py"}, timeout=30, context=self._ctx,
-            )
-            # 401 is a positive result here: it proves splunkd answered.
-            result["mgmt_server_info"] = status
-        except Exception as exc:  # noqa: BLE001
-            result["mgmt_server_info"] = "unreachable: {}".format(exc)
-
+        for key, url in (
+            ("web_login", self.web_url + "/en-US/account/login"),
+            ("mgmt_server_info", self.mgmt_url + "/services/server/info"),
+        ):
+            try:
+                status, _, _ = _request(
+                    "GET", url, {"User-Agent": "scts.py"}, timeout=30, context=self._ctx,
+                )
+                # 401 on the management URL is a positive result: splunkd answered.
+                result[key] = status
+            except Exception as exc:  # noqa: BLE001 - a probe reports, never raises
+                result[key] = "unreachable: {}".format(exc)
         return result
 
-    # -- route 1: Splunk Web upload ----------------------------------------
+    # -- install ------------------------------------------------------------
 
-    def _web_login(self) -> Dict[str, str]:
-        """Log in to Splunk Web and return the cookies + CSRF form key.
+    def _web_login(self) -> str:
+        """Log in to Splunk Web, returning the post-login CSRF form key.
 
-        Splunk Web issues the CSRF token as a cookie (`cval` before login,
+        Splunk issues the CSRF token as a cookie (`cval` before login,
         `splunkweb_csrf_token_<port>` after) and expects it echoed back in the
         `X-Splunk-Form-Key` header. Miss that and every POST is a 403.
         """
-        status, _, headers = _request(
-            "GET", self.web_url + "/en-US/account/login",
-            {"User-Agent": "scts.py"}, timeout=30, context=self._ctx,
-        )
-        cookies = _parse_cookies(headers)
-        form_key = cookies.get("cval", "")
+        self._opener.open(self.web_url + "/en-US/account/login", timeout=60).read()
+        cval = self._cookie("cval")
 
-        body = urllib.parse.urlencode({
+        payload = urllib.parse.urlencode({
             "username": self.username,
             "password": self.password,
-            "cval": form_key,
+            "cval": cval,
         }).encode("utf-8")
-        status, _, headers = _request(
-            "POST", self.web_url + "/en-US/account/login",
-            {
-                "User-Agent": "scts.py",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Cookie": _cookie_header(cookies),
-                "X-Splunk-Form-Key": form_key,
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            body, timeout=60, context=self._ctx,
+        request = urllib.request.Request(
+            self.web_url + "/en-US/account/login", data=payload, method="POST",
         )
-        if status not in (200, 302, 303):
-            fail("Splunk Web login failed on {} (HTTP {}).".format(self.web_url, status))
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        request.add_header("X-Splunk-Form-Key", cval)
+        request.add_header("X-Requested-With", "XMLHttpRequest")
+        try:
+            response = self._opener.open(request, timeout=60)
+        except urllib.error.HTTPError as exc:
+            fail("Splunk Web login failed on {} (HTTP {}).".format(self.web_url, exc.code))
+        if response.status not in (200, 302, 303):
+            fail("Splunk Web login failed on {} (HTTP {}).".format(self.web_url, response.status))
 
-        cookies.update(_parse_cookies(headers))
-        post_login_key = next(
-            (v for k, v in cookies.items() if k.startswith("splunkweb_csrf_token")), form_key,
-        )
-        cookies["__form_key__"] = post_login_key
-        return cookies
+        # The post-login token replaces cval for subsequent form posts.
+        return self._cookie("splunkweb_csrf_token") or cval
 
     def install_via_web(self, package_path: str) -> None:
-        cookies = self._web_login()
-        form_key = cookies.pop("__form_key__")
+        """Upload an add-on package through the Splunk Web app installer.
 
+        This is the route, not management REST: `POST /services/apps/local` does
+        not parse a multipart body at all (it answers HTTP 500 `'name'`, a
+        KeyError on the field it never read), and its `name` argument wants a
+        path on the server, which a remote caller has no way to produce.
+        """
+        form_key = self._web_login()
         body, content_type = _multipart(
-            {"force": "1", "appfile_url": "", "cval": form_key},
-            "appfile", package_path,
+            {"force": "1", "appfile_url": "", "cval": form_key}, "appfile", package_path,
         )
-        status, raw, _ = _request(
-            "POST", self.web_url + "/en-US/manager/appinstall/_upload",
-            {
-                "User-Agent": "scts.py",
-                "Content-Type": content_type,
-                "Cookie": _cookie_header(cookies),
-                "X-Splunk-Form-Key": form_key,
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            body, timeout=300, context=self._ctx,
+        request = urllib.request.Request(
+            self.web_url + "/en-US/manager/appinstall/_upload", data=body, method="POST",
         )
-        if status not in (200, 201, 303):
+        request.add_header("Content-Type", content_type)
+        request.add_header("X-Splunk-Form-Key", form_key)
+        request.add_header("X-Requested-With", "XMLHttpRequest")
+        request.add_header("Referer", self.web_url + "/en-US/manager/appinstall/_upload")
+        try:
+            response = self._opener.open(request, timeout=900)
+        except urllib.error.HTTPError as exc:
             fail(
                 "App upload rejected by Splunk Web (HTTP {}): {}".format(
-                    status, raw.decode("utf-8", "replace")[:400]
+                    exc.code, exc.read().decode("utf-8", "replace")[:400]
                 )
             )
-        log("Uploaded {} via Splunk Web.".format(os.path.basename(package_path)))
+        log("Uploaded {} via Splunk Web (HTTP {}).".format(
+            os.path.basename(package_path), response.status))
 
     # -- verification -------------------------------------------------------
 
@@ -403,44 +408,28 @@ class Stack:
         proves *which commit* is on the stack, not merely that something with
         the right name installed.
         """
-        auth = _basic_auth(self.username, self.password)
         url = "{}/servicesNS/nobody/system/apps/local/{}?output_mode=json".format(
             self.mgmt_url, urllib.parse.quote(app_name),
         )
         try:
             status, raw, _ = _request(
                 "GET", url,
-                {"User-Agent": "scts.py", "Authorization": auth},
-                timeout=60, context=self._ctx,
+                {"User-Agent": "scts.py", "Authorization": _basic_auth(self.username, self.password)},
+                timeout=90, context=self._ctx,
             )
         except Exception as exc:  # noqa: BLE001
             log("Could not reach the management API to verify: {}".format(exc))
+            return None
+        if status == 404:
+            log("{} is not present on the stack (HTTP 404).".format(app_name))
             return None
         if status != 200:
             log("Verification request returned HTTP {}.".format(status))
             return None
         try:
-            data = json.loads(raw.decode("utf-8"))
-            return data["entry"][0]["content"].get("version")
+            return json.loads(raw.decode("utf-8"))["entry"][0]["content"].get("version")
         except (ValueError, KeyError, IndexError):
             return None
-
-
-def _parse_cookies(headers: Dict[str, str]) -> Dict[str, str]:
-    jar: Dict[str, str] = {}
-    raw = headers.get("Set-Cookie") or ""
-    for chunk in re.split(r",(?=[^;]+?=)", raw):
-        pair = chunk.split(";", 1)[0].strip()
-        if "=" in pair:
-            key, _, value = pair.partition("=")
-            jar[key.strip()] = value.strip()
-    return jar
-
-
-def _cookie_header(jar: Dict[str, str]) -> str:
-    return "; ".join(
-        "{}={}".format(k, v) for k, v in jar.items() if not k.startswith("__")
-    )
 
 
 def _basic_auth(user: str, password: str) -> str:
@@ -566,7 +555,10 @@ def main(argv: Optional[list] = None) -> int:
     p_create = sub.add_parser("create", help="Create a stack and wait for it.")
     p_create.add_argument("--splunk-version", default=None,
                           help="Build version to provision. Omit for latest released.")
-    p_create.add_argument("--timeout", type=int, default=1800, help="Seconds to wait for RUNNING.")
+    p_create.add_argument(
+        "--timeout", type=int, default=5400,
+        help="Seconds to wait for RUNNING. Observed provisioning time is ~75 min.",
+    )
     p_create.add_argument("--interval", type=int, default=20, help="Poll interval in seconds.")
     p_create.add_argument("--no-wait", action="store_true")
     p_create.set_defaults(func=cmd_create)

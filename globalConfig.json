@@ -2,7 +2,7 @@
     "meta": {
         "name": "TA-cicd-pattern",
         "restRoot": "TA-cicd-pattern",
-        "version": "1.0.0",
+        "version": "1.0.0+d689ebf",
         "displayName": "Splunk App CI/CD Pattern",
         "schemaVersion": "0.0.10",
         "supportedPythonVersion": [
