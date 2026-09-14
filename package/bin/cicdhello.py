@@ -42,7 +42,7 @@ class CicdHelloCommand(GeneratingCommand):
     def generate(self):
         yield {
             "_time": datetime.now(timezone.utc).timestamp(),
-            "_raw": "TA-cicd-pattern installed and executable",
+            "_raw": "TA-cicd-pattern installed and executable. This is the cicdhello command output.",
             "app": "TA-cicd-pattern",
             "version": _app_version(),
             "python_version": "{}.{}.{}".format(*sys.version_info[:3]),
