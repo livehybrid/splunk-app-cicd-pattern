@@ -1,0 +1,138 @@
+# Install the built add-on onto a real, short-lived Splunk stack.
+#
+#   build -> request an SCTS stack -> wait for RUNNING -> install -> verify -> delete
+#
+# This is the leg that answers the question AppInspect cannot: "does it actually
+# load on a real Splunk?". AppInspect reads your package. This runs it.
+#
+# Opt-in, and off by default, so a fresh copy of this template stays green with
+# no credentials:
+#
+#   1. Repository variable  SCTS_ENABLED = true
+#   2. Repository secret    SCTS_API_TOKEN = <your Dev Portal API token>
+#
+# The token is a secret, never a file in the repo. On a public repository that
+# distinction is the whole ballgame, which is also why this workflow never runs
+# on `pull_request`: a fork PR must not be able to spend your stack quota, and
+# `pull_request_target` would hand it your token.
+name: SCTS stack test
+
+on:
+  workflow_dispatch:
+    inputs:
+      splunk_version:
+        description: "Splunk build version (blank = latest released)"
+        required: false
+        type: string
+      keep_stack:
+        description: "Leave the stack running for manual poking"
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - "feat/scts-**"
+
+permissions:
+  contents: read
+
+jobs:
+  scts:
+    name: install on a real stack
+    runs-on: ubuntu-latest
+    # Without this the job would fail confusingly on every fork and on any repo
+    # that copied the template, rather than simply not running.
+    if: vars.SCTS_ENABLED == 'true'
+    env:
+      SCTS_API_TOKEN: ${{ secrets.SCTS_API_TOKEN }}
+      APP_NAME: TA-cicd-pattern
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Fail early if the token is missing
+        shell: bash
+        run: |
+          # SCTS_ENABLED without the secret is the likeliest misconfiguration,
+          # and it would otherwise surface 20 minutes later as a 401.
+          if [[ -z "${SCTS_API_TOKEN}" ]]; then
+            echo "::error::SCTS_ENABLED is true but the SCTS_API_TOKEN secret is not set."
+            exit 1
+          fi
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          SHORT_COMMIT_HASH=$(git rev-parse --short HEAD)
+          TAG_VERSION="1.0.0"
+          echo "VERSION_WITH_HASH=${TAG_VERSION}+${SHORT_COMMIT_HASH}" >> $GITHUB_OUTPUT
+
+      - name: Install UCC framework
+        run: pip install --upgrade splunk-add-on-ucc-framework
+
+      - name: Build add-on (ucc-gen)
+        shell: bash
+        run: |
+          ucc-gen build --source package --ta-version "${{ steps.version.outputs.VERSION_WITH_HASH }}"
+          mkdir -p stage dist
+          cp -r "output/${APP_NAME}" "stage/${APP_NAME}"
+          find "stage/${APP_NAME}" -type d -exec chmod 755 {} +
+          find "stage/${APP_NAME}" -type f -exec chmod 644 {} +
+          tar -czf "dist/${APP_NAME}-${{ steps.version.outputs.VERSION_WITH_HASH }}.tar.gz" \
+            -C stage "${APP_NAME}/"
+          ls -la dist/
+
+      - name: List available Splunk versions
+        shell: bash
+        run: python3 .github/scripts/scts.py versions
+
+      # Creating the stack is its own step so that `outputs.stack_id` exists for
+      # teardown even when a later step fails. A stack that leaks sits there
+      # until its termination date burning quota.
+      - name: Request a stack
+        id: stack
+        shell: bash
+        run: |
+          python3 .github/scripts/scts.py create \
+            ${{ inputs.splunk_version && format('--splunk-version {0}', inputs.splunk_version) || '' }} \
+            --timeout 1800 --interval 20
+
+      - name: Install the add-on onto the stack
+        id: install
+        shell: bash
+        run: |
+          PACKAGE="dist/${APP_NAME}-${{ steps.version.outputs.VERSION_WITH_HASH }}.tar.gz"
+          python3 .github/scripts/scts.py install "${{ steps.stack.outputs.stack_id }}" \
+            --package "$PACKAGE" \
+            --app-name "${APP_NAME}" \
+            --expect-version "${{ steps.version.outputs.VERSION_WITH_HASH }}"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### SCTS stack test"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Stack | \`${{ steps.stack.outputs.stack_id }}\` |"
+            echo "| Splunk | ${{ steps.stack.outputs.splunk_version }} |"
+            echo "| Built | \`${{ steps.version.outputs.VERSION_WITH_HASH }}\` |"
+            echo "| On stack | \`${{ steps.install.outputs.installed_version }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # always(), because the entire point of a short-lived stack is that it is
+      # short-lived. A failed install must still tear down.
+      - name: Delete the stack
+        if: always() && !inputs.keep_stack
+        shell: bash
+        run: |
+          python3 .github/scripts/scts.py delete "${{ steps.stack.outputs.stack_id }}"

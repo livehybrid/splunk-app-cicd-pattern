@@ -58,6 +58,49 @@ credentials. It is off by default so a fresh clone stays green. To enable it:
 
 Left unset, that job skips and the rest of the pipeline is unaffected.
 
+### Optional: the SCTS leg (install on a real Splunk)
+
+AppInspect reads your package. It cannot tell you whether the add-on actually
+loads. The [Splunk Cloud Testing Service](https://scts.dev.splunk.com) hands out
+short-lived Splunk stacks from an API, which closes that gap:
+
+```
+build -> request a stack -> wait for RUNNING -> install -> verify the version -> delete
+```
+
+The verify step is the one that earns its keep. Because the build stamps the
+commit hash into `app.conf`, reading the version back off the stack proves
+*which commit* is running, not merely that something with the right name
+installed.
+
+Off by default, like the API leg. To enable it:
+
+- add repository secret **`SCTS_API_TOKEN`** = your Dev Portal API token
+- add repository **variable** `SCTS_ENABLED` = `true`
+
+Then run it from the Actions tab (**SCTS stack test** → Run workflow), where you
+can pick a Splunk version or tick `keep_stack` to leave the stack up and poke at
+it by hand.
+
+The token is a **secret**, never a file in the repo. Everything derived from a
+stack's credentials is passed through `::add-mask::` before it can reach a log
+line: the stack is short-lived, but a build log is not. For the same reason this
+workflow never triggers on `pull_request`, so a fork cannot spend your stack
+quota, and never on `pull_request_target`, which would hand a fork your token.
+
+Teardown runs under `if: always()`, so a failed install still deletes the stack.
+
+The client is [`.github/scripts/scts.py`](.github/scripts/scts.py), stdlib only,
+and it works from your laptop too:
+
+```bash
+export SCTS_API_TOKEN=...
+python3 .github/scripts/scts.py versions
+python3 .github/scripts/scts.py create
+python3 .github/scripts/scts.py install <stack-id> --package dist/TA-cicd-pattern-1.0.0+abc1234.tar.gz --app-name TA-cicd-pattern
+python3 .github/scripts/scts.py delete <stack-id>
+```
+
 ### Run the same checks locally
 
 ```bash
