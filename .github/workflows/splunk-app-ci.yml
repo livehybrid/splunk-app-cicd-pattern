@@ -1,7 +1,8 @@
-# Build, test, ship. Four jobs, no bespoke scripts, nothing to configure.
+# Build, test, ship. No bespoke scripts, nothing to configure to get started.
 #
 #   push / PR   -> package (ucc-gen) -> AppInspect (cloud, future, private_victoria)
 #   tag v*.*.*  -> ^ all of that, then publish a GitHub release
+#                  (+ Splunkbase, opt-in: see the publish-splunkbase job)
 #
 # The AppInspect and publish legs are reusable workflows kept in
 # livehybrid/deploy-splunk-app-action, so every add-on you own gets the same
@@ -108,3 +109,25 @@ jobs:
       contents: write
     needs: appinspect
     uses: livehybrid/deploy-splunk-app-action/.github/workflows/publish.yml@main
+
+  # Splunkbase. Opt-in, and only on a v*.*.* tag after the GitHub release AND
+  # the AppInspect API leg have passed (so APPINSPECT_API must be on too).
+  # Uploads the release hidden, waits for Splunkbase's own validation, and
+  # only then makes it public; a failed vetting never reaches customers.
+  # To enable: repo variables SPLUNKBASE_APP_ID = <your listing's number> and
+  # SPLUNKBASE_PUBLISH_ENABLED = true. The listing must already exist: create
+  # the app's first release in the Splunkbase UI.
+  publish-splunkbase:
+    needs:
+      - publish-gh
+      - quality-appinspect-api
+    permissions:
+      contents: read
+    uses: livehybrid/deploy-splunk-app-action/.github/workflows/publish-splunkbase.yml@main
+    with:
+      app_id: ${{ vars.SPLUNKBASE_APP_ID }}
+      # Claim only the Splunk versions you actually test against.
+      splunk_versions: "10.6,10.4,10.2,10.0,9.4"
+    secrets:
+      splunkbase_username: ${{ secrets.SPLUNKBASE_USERNAME }}
+      splunkbase_password: ${{ secrets.SPLUNKBASE_PASSWORD }}

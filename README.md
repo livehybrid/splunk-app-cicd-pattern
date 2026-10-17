@@ -29,10 +29,11 @@ happens the same way, every time, without you.
 | **Test (deep)** | AppInspect API, the same vetting Splunkbase runs | opt-in, see below |
 | **Package** | tarball stamped `<version>+<short commit hash>` | every push and PR |
 | **Ship** | GitHub release with the tarball attached | only on a `v*.*.*` tag |
+| **Ship (Splunkbase)** | upload, Splunkbase validation, then public | opt-in, on a `v*.*.*` tag, see below |
 
-Publishing to Splunkbase is deliberately not wired up here. The pipeline's job
-is to hand you a vetted, versioned tarball; uploading it stays a human step, which
-keeps a person in the loop on what reaches customers.
+Pushing the tag is the human decision. Splunkbase publishing is off until you
+switch it on, and even then a release only goes public after the AppInspect API
+leg and Splunkbase's own validation have both passed.
 
 One file drives all of it: [`.github/workflows/splunk-app-ci.yml`](.github/workflows/splunk-app-ci.yml).
 The test and ship stages are reusable workflows kept in
@@ -57,6 +58,31 @@ credentials. It is off by default so a fresh clone stays green. To enable it:
 - add repository **variable** `APPINSPECT_API` = `true`
 
 Left unset, that job skips and the rest of the pipeline is unaffected.
+
+### Optional: publish to Splunkbase
+
+The `publish-splunkbase` job uploads each tagged release to your app's
+existing Splunkbase listing. It needs the AppInspect API leg above, plus:
+
+- repository **variable** `SPLUNKBASE_APP_ID` = the number in your listing's URL
+- repository **variable** `SPLUNKBASE_PUBLISH_ENABLED` = `true`
+
+The listing has to exist first: create the app's first release in the
+Splunkbase UI. After that, every `v*.*.*` tag goes up on its own:
+
+1. It checks the listing before sending anything: the package's app id must
+   match, the listing must not be archived, and the version must be newer than
+   what is published. A version that is already there counts as success, so
+   re-running a pipeline is harmless.
+2. It uploads the release **hidden** and waits for Splunkbase's validation.
+3. Only on a pass does it make the release public and set it as the latest.
+
+A failed validation leaves a hidden release you can delete; a public release
+can never be deleted or replaced, which is why that step is last. Edit
+`splunk_versions` in the workflow to the Splunk versions you actually test.
+
+To publish a release that already exists, or to rehearse with a dry run, use
+**Actions > Publish a release to Splunkbase** (`splunkbase-publish.yml`).
 
 ### Run the same checks locally
 
